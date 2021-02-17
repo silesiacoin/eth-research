@@ -25,9 +25,9 @@ func main() {
 	}
 
 	slotInfo := accManager.NewSlotInfo(2, 64, 5454)
-	log.Info("creating dummy slot info for siging: ", slotInfo)
+	log.Info("creating dummy slot info for signing: ", slotInfo)
 
-	signerPubKeyIndex := uint64(0)
+	signerPubKeyIndex := uint64(1)
 	signature, err := keyManager.Sign(slotInfo, signerPubKeyIndex)
 	if err != nil {
 		log.Errorf("Failed to verify signature with publicKeyIndex: %d error: %v", signerPubKeyIndex, err)

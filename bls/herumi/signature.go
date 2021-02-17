@@ -200,5 +200,5 @@ func (s *Signature) Copy() common.Signature {
 
 // Get hex string of the signature
 func (s *Signature) HexString() string {
-	return s.s.GetHexString()
+	return s.s.SerializeToHexStr()
 }
