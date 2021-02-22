@@ -30,16 +30,16 @@ func main() {
 	signerPubKeyIndex := uint64(1)
 	signature, err := keyManager.Sign(slotInfo, signerPubKeyIndex)
 	if err != nil {
-		log.Errorf("Failed to verify signature with publicKeyIndex: %d error: %v", signerPubKeyIndex, err)
+		log.Errorf("failed to verify signature with publicKeyIndex: %d error: %v", signerPubKeyIndex, err)
 		return
 	}
-	log.Infof("Successfully generate signature: %s with publicKeyIndex: %d", signature.HexString(), signerPubKeyIndex)
+	log.Infof("successfully generate signature: %s with publicKeyIndex: %d", signature.HexString(), signerPubKeyIndex)
 
-	verifierPubKeyIndex := uint64(1)
+	verifierPubKeyIndex := uint64(0)
 	err = keyManager.VerifySignature(slotInfo, verifierPubKeyIndex, signature)
 	if err != nil {
-		log.Errorf("Failed to verify signature: %s with publicKeyIndex: %d error: %v", signature.HexString(), verifierPubKeyIndex, err)
+		log.Errorf("failed to verify signature: %s with publicKeyIndex: %d error: %v", signature.HexString(), verifierPubKeyIndex, err)
 		return
 	}
-	log.Infof("Successfully verify the signature: %s with publicKeyIndex: %d", signature.HexString(), verifierPubKeyIndex)
+	log.Infof("successfully verify the signature: %s with publicKeyIndex: %d", signature.HexString(), verifierPubKeyIndex)
 }
