@@ -21,12 +21,9 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"reflect"
 	"runtime"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -154,9 +151,6 @@ func TestClientNotify(t *testing.T) {
 	}
 }
 
-// func TestClientCancelInproc(t *testing.T) { testClientCancel("inproc", t) }
-func TestClientCancelWebsocket(t *testing.T) { testClientCancel("ws", t) }
-func TestClientCancelHTTP(t *testing.T)      { testClientCancel("http", t) }
 func TestClientCancelIPC(t *testing.T)       { testClientCancel("ipc", t) }
 
 // This test checks that requests made through CallContext can be canceled by canceling
@@ -191,10 +185,6 @@ func testClientCancel(transport string, t *testing.T) {
 
 	var client *Client
 	switch transport {
-	case "ws", "http":
-		c, hs := httpTestClient(server, transport, fl)
-		defer hs.Close()
-		client = c
 	case "ipc":
 		c, l := ipcTestClient(server, fl)
 		defer l.Close()
@@ -430,177 +420,7 @@ func TestClientNotificationStorm(t *testing.T) {
 	doTest(23000, true)
 }
 
-func TestClientSetHeader(t *testing.T) {
-	var gotHeader bool
-	srv := newTestServer()
-	httpsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("test") == "ok" {
-			gotHeader = true
-		}
-		srv.ServeHTTP(w, r)
-	}))
-	defer httpsrv.Close()
-	defer srv.Stop()
 
-	client, err := Dial(httpsrv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	client.SetHeader("test", "ok")
-	if _, err := client.SupportedModules(); err != nil {
-		t.Fatal(err)
-	}
-	if !gotHeader {
-		t.Fatal("client did not set custom header")
-	}
-
-	// Check that Content-Type can be replaced.
-	client.SetHeader("content-type", "application/x-garbage")
-	_, err = client.SupportedModules()
-	if err == nil {
-		t.Fatal("no error for invalid content-type header")
-	} else if !strings.Contains(err.Error(), "Unsupported Media Type") {
-		t.Fatalf("error is not related to content-type: %q", err)
-	}
-}
-
-func TestClientHTTP(t *testing.T) {
-	server := newTestServer()
-	defer server.Stop()
-
-	client, hs := httpTestClient(server, "http", nil)
-	defer hs.Close()
-	defer client.Close()
-
-	// Launch concurrent requests.
-	var (
-		results    = make([]echoResult, 100)
-		errc       = make(chan error, len(results))
-		wantResult = echoResult{"a", 1, new(echoArgs)}
-	)
-	defer client.Close()
-	for i := range results {
-		i := i
-		go func() {
-			errc <- client.Call(&results[i], "test_echo", wantResult.String, wantResult.Int, wantResult.Args)
-		}()
-	}
-
-	// Wait for all of them to complete.
-	timeout := time.NewTimer(5 * time.Second)
-	defer timeout.Stop()
-	for i := range results {
-		select {
-		case err := <-errc:
-			if err != nil {
-				t.Fatal(err)
-			}
-		case <-timeout.C:
-			t.Fatalf("timeout (got %d/%d) results)", i+1, len(results))
-		}
-	}
-
-	// Check results.
-	for i := range results {
-		if !reflect.DeepEqual(results[i], wantResult) {
-			t.Errorf("result %d mismatch: got %#v, want %#v", i, results[i], wantResult)
-		}
-	}
-}
-
-func TestClientReconnect(t *testing.T) {
-	startServer := func(addr string) (*Server, net.Listener) {
-		srv := newTestServer()
-		l, err := net.Listen("tcp", addr)
-		if err != nil {
-			t.Fatal("can't listen:", err)
-		}
-		go http.Serve(l, srv.WebsocketHandler([]string{"*"}))
-		return srv, l
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-	defer cancel()
-
-	// Start a server and corresponding client.
-	s1, l1 := startServer("127.0.0.1:0")
-	client, err := DialContext(ctx, "ws://"+l1.Addr().String())
-	if err != nil {
-		t.Fatal("can't dial", err)
-	}
-
-	// Perform a call. This should work because the server is up.
-	var resp echoResult
-	if err := client.CallContext(ctx, &resp, "test_echo", "", 1, nil); err != nil {
-		t.Fatal(err)
-	}
-
-	// Shut down the server and allow for some cool down time so we can listen on the same
-	// address again.
-	l1.Close()
-	s1.Stop()
-	time.Sleep(2 * time.Second)
-
-	// Try calling again. It shouldn't work.
-	if err := client.CallContext(ctx, &resp, "test_echo", "", 2, nil); err == nil {
-		t.Error("successful call while the server is down")
-		t.Logf("resp: %#v", resp)
-	}
-
-	// Start it up again and call again. The connection should be reestablished.
-	// We spawn multiple calls here to check whether this hangs somehow.
-	s2, l2 := startServer(l1.Addr().String())
-	defer l2.Close()
-	defer s2.Stop()
-
-	start := make(chan struct{})
-	errors := make(chan error, 20)
-	for i := 0; i < cap(errors); i++ {
-		go func() {
-			<-start
-			var resp echoResult
-			errors <- client.CallContext(ctx, &resp, "test_echo", "", 3, nil)
-		}()
-	}
-	close(start)
-	errcount := 0
-	for i := 0; i < cap(errors); i++ {
-		if err = <-errors; err != nil {
-			errcount++
-		}
-	}
-	t.Logf("%d errors, last error: %v", errcount, err)
-	if errcount > 1 {
-		t.Errorf("expected one error after disconnect, got %d", errcount)
-	}
-}
-
-func httpTestClient(srv *Server, transport string, fl *flakeyListener) (*Client, *httptest.Server) {
-	// Create the HTTP server.
-	var hs *httptest.Server
-	switch transport {
-	case "ws":
-		hs = httptest.NewUnstartedServer(srv.WebsocketHandler([]string{"*"}))
-	case "http":
-		hs = httptest.NewUnstartedServer(srv)
-	default:
-		panic("unknown HTTP transport: " + transport)
-	}
-	// Wrap the listener if required.
-	if fl != nil {
-		fl.Listener = hs.Listener
-		hs.Listener = fl
-	}
-	// Connect the client.
-	hs.Start()
-	client, err := Dial(transport + "://" + hs.Listener.Addr().String())
-	if err != nil {
-		panic(err)
-	}
-	return client, hs
-}
 
 func ipcTestClient(srv *Server, fl *flakeyListener) (*Client, net.Listener) {
 	// Listen on a random endpoint.

@@ -172,12 +172,6 @@ func DialContext(ctx context.Context, rawurl string) (*Client, error) {
 		return nil, err
 	}
 	switch u.Scheme {
-	case "http", "https":
-		return DialHTTP(rawurl)
-	case "ws", "wss":
-		return DialWebsocket(ctx, rawurl, "")
-	case "stdio":
-		return DialStdIO(ctx)
 	case "":
 		return DialIPC(ctx, rawurl)
 	default:
@@ -203,10 +197,9 @@ func newClient(initctx context.Context, connect reconnectFunc) (*Client, error) 
 }
 
 func initClient(conn ServerCodec, idgen func() ID, services *serviceRegistry) *Client {
-	_, isHTTP := conn.(*httpConn)
 	c := &Client{
 		idgen:       idgen,
-		isHTTP:      isHTTP,
+		isHTTP:      false,
 		services:    services,
 		writeConn:   conn,
 		close:       make(chan struct{}),
@@ -219,9 +212,7 @@ func initClient(conn ServerCodec, idgen func() ID, services *serviceRegistry) *C
 		reqSent:     make(chan error, 1),
 		reqTimeout:  make(chan *requestOp),
 	}
-	if !isHTTP {
-		go c.dispatch(conn)
-	}
+	go c.dispatch(conn)
 	return c
 }
 
@@ -267,10 +258,6 @@ func (c *Client) SetHeader(key, value string) {
 	if !c.isHTTP {
 		return
 	}
-	conn := c.writeConn.(*httpConn)
-	conn.mu.Lock()
-	conn.headers.Set(key, value)
-	conn.mu.Unlock()
 }
 
 // Call performs a JSON-RPC call with the given arguments and unmarshals into
@@ -298,11 +285,8 @@ func (c *Client) CallContext(ctx context.Context, result interface{}, method str
 	}
 	op := &requestOp{ids: []json.RawMessage{msg.ID}, resp: make(chan *jsonrpcMessage, 1)}
 
-	if c.isHTTP {
-		err = c.sendHTTP(ctx, op, msg)
-	} else {
-		err = c.send(ctx, op, msg)
-	}
+
+	err = c.send(ctx, op, msg)
 	if err != nil {
 		return err
 	}
@@ -357,11 +341,7 @@ func (c *Client) BatchCallContext(ctx context.Context, b []BatchElem) error {
 	}
 
 	var err error
-	if c.isHTTP {
-		err = c.sendBatchHTTP(ctx, op, msgs)
-	} else {
-		err = c.send(ctx, op, msgs)
-	}
+	err = c.send(ctx, op, msgs)
 
 	// Wait for all responses to come back.
 	for n := 0; n < len(b) && err == nil; n++ {
@@ -401,12 +381,7 @@ func (c *Client) Notify(ctx context.Context, method string, args ...interface{})
 		return err
 	}
 	msg.ID = nil
-
-	if c.isHTTP {
-		return c.sendHTTP(ctx, op, msg)
-	} else {
-		return c.send(ctx, op, msg)
-	}
+	return c.send(ctx, op, msg)
 }
 
 // EthSubscribe registers a subscripion under the "eth" namespace.

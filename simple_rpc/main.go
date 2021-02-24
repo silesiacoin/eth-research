@@ -12,9 +12,10 @@ import (
 	"strings"
 
 	"github.com/atif-konasl/eth-research/simple_rpc/api"
-	"github.com/atif-konasl/eth-research/simple_rpc/utils"
 	"github.com/atif-konasl/eth-research/simple_rpc/rpc"
+	"github.com/atif-konasl/eth-research/simple_rpc/utils"
 	cli "gopkg.in/urfave/cli.v1"
+	ipcclient "github.com/atif-konasl/eth-research/simple_rpc/ipc-client"
 )
 
 
@@ -31,26 +32,11 @@ var (
 		ArgsUsage: "",
 		Flags: []cli.Flag{
 			utils.IPCPathFlag,
-			utils.IPCDisabledFlag,
-			utils.HTTPEnabledFlag,
-			utils.HTTPListenAddrFlag,
-			utils.HTTPPortFlag,
 			utils.LogLevelFlag,
 			utils.ConfigDirFlag,
 		},
 		Description: `
 The start-server command starts the rpc server using http or ipc.`,
-	}
-	serverStopCommand    = cli.Command{
-		Action:    utils.MigrateFlags(stopSever),
-		Name:      "stop-server",
-		Usage:     "Stop server",
-		ArgsUsage: "",
-		Flags: []cli.Flag{
-			utils.LogLevelFlag,
-		},
-		Description: `
-The stop-server command stop the rpc server using http or ipc.`,
 	}
 	clientStartCommand = cli.Command{
 		Action:    utils.MigrateFlags(client),
@@ -58,7 +44,9 @@ The stop-server command stop the rpc server using http or ipc.`,
 		Usage:     "Run client",
 		ArgsUsage: "",
 		Flags: []cli.Flag{
+			utils.IPCPathFlag,
 			utils.LogLevelFlag,
+			utils.ConfigDirFlag,
 		},
 		Description: `
 The client command starts the client to communicate with rpc server via http or ipc`,
@@ -71,17 +59,7 @@ var AppHelpFlagGroups = []utils.FlagGroup{
 	{
 		Name: "IPC-FLAGS",
 		Flags: []cli.Flag{
-			utils.IPCDisabledFlag,
 			utils.IPCPathFlag,
-			utils.ConfigDirFlag,
-		},
-	},
-	{
-		Name: "HTTP-FLAGS",
-		Flags: []cli.Flag{
-			utils.HTTPEnabledFlag,
-			utils.HTTPListenAddrFlag,
-			utils.HTTPPortFlag,
 			utils.ConfigDirFlag,
 		},
 	},
@@ -99,10 +77,6 @@ func init() {
 	app.Name = "Orchestrator"
 	app.Usage = "Orchestrator client is the main consensus client for beaconchain and catalyst chain"
 	app.Flags = []cli.Flag{
-		utils.HTTPPortFlag,
-		utils.HTTPListenAddrFlag,
-		utils.HTTPEnabledFlag,
-		utils.IPCDisabledFlag,
 		utils.IPCPathFlag,
 		utils.LogLevelFlag,
 		utils.ConfigDirFlag,
@@ -111,7 +85,6 @@ func init() {
 
 	app.Commands = []cli.Command{
 		serverStartCommand,
-		serverStopCommand,
 		clientStartCommand,
 	}
 
@@ -171,42 +144,52 @@ func startServer(c *cli.Context) error {
 	}
 
 	configDir := c.GlobalString(utils.ConfigDirFlag.Name)
-	if !c.GlobalBool(utils.IPCDisabledFlag.Name) {
-		givenPath := c.GlobalString(utils.IPCPathFlag.Name)
-		ipcapiURL = ipcEndpoint(filepath.Join(givenPath, "orchestrator.ipc"), configDir)
-		listener, _, err := rpc.StartIPCEndpoint(ipcapiURL, rpcAPI)
-		if err != nil {
-			log.Fatalf("Could not start IPC api: %v", err)
-		}
-		serverListner = listener
-		log.Info("IPC endpoint opened", "url", ipcapiURL)
-		defer func() {
-			listener.Close()
-			log.Info("IPC endpoint closed", "url", ipcapiURL)
-		}()
+	givenPath := c.GlobalString(utils.IPCPathFlag.Name)
+	ipcapiURL = ipcEndpoint(filepath.Join(givenPath, "orchestrator.ipc"), configDir)
+	listener, _, err := rpc.StartIPCEndpoint(ipcapiURL, rpcAPI)
+	if err != nil {
+		log.Fatalf("Could not start IPC api: %v", err)
 	}
+	serverListner = listener
+	log.Info("IPC endpoint opened url: ", ipcapiURL)
+	defer func() {
+		listener.Close()
+		log.Info("IPC endpoint closed url: ", ipcapiURL)
+	}()
+
 
 	abortChan := make(chan os.Signal, 1)
 	signal.Notify(abortChan, os.Interrupt)
 
 	sig := <-abortChan
-	log.Info("Exiting...", "signal", sig)
+	log.Info("Exiting... signal: ", sig)
 
 	return nil
 }
 
-//
-func stopSever(c *cli.Context) error {
-	if serverListner != nil {
-		serverListner.Close()
-		log.Info("IPC endpoint closed", "url", ipcapiURL)
-	}
-	return nil
-}
 
-//
 func client(c *cli.Context) error {
+	configDir := c.GlobalString(utils.ConfigDirFlag.Name)
+	givenPath := c.GlobalString(utils.IPCPathFlag.Name)
+	ipcapiURL = ipcEndpoint(filepath.Join(givenPath, "orchestrator.ipc"), configDir)
 
+	ipcClient, err := ipcclient.NewIpcClilent(ipcapiURL)
+	if err != nil {
+		log.Error("Could not connect with server. error: ", err)
+		return err
+	}
+
+	extraData := api.ExtraData{
+		Slot: 4998,
+		Epoch: 454,
+	}
+	shardInfo, err := ipcClient.ProduceCatalystBlock(extraData)
+	if err != nil {
+		log.Error("Could not get sharding info. error: ", err)
+		return err
+	}
+	log.Info("Sharding info. parentHash: ",  shardInfo.ParentHash)
+	log.Info("Sharding info. blockNumber: ",  shardInfo.Number)
 	return nil
 }
 

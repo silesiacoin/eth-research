@@ -7,14 +7,6 @@ import (
 	"runtime"
 )
 
-const (
-	DefaultHTTPHost    = "localhost" // Default host interface for the HTTP RPC server
-	DefaultHTTPPort    = 8545        // Default TCP port for the HTTP RPC server
-	DefaultWSHost      = "localhost" // Default host interface for the websocket RPC server
-	DefaultWSPort      = 8546        // Default TCP port for the websocket RPC server
-	HTTPVirtualHosts   = "localhost"
-)
-
 // DefaultConfigDir is the default config directory to use for the vaults and other
 // persistence requirements.
 func DefaultConfigDir() string {
@@ -22,16 +14,16 @@ func DefaultConfigDir() string {
 	home := utils.HomeDir()
 	if home != "" {
 		if runtime.GOOS == "darwin" {
-			return filepath.Join(home, "Library", "Signer")
+			return filepath.Join(home, "Library", "Orchestrator")
 		} else if runtime.GOOS == "windows" {
 			appdata := os.Getenv("APPDATA")
 			if appdata != "" {
-				return filepath.Join(appdata, "Signer")
+				return filepath.Join(appdata, "Orchestrator")
 			} else {
-				return filepath.Join(home, "AppData", "Roaming", "Signer")
+				return filepath.Join(home, "AppData", "Roaming", "Orchestrator")
 			}
 		} else {
-			return filepath.Join(home, ".clef")
+			return filepath.Join(home, ".Orchestrator")
 		}
 	}
 	// As we cannot guess a stable location, return empty and handle later

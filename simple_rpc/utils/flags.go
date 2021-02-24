@@ -5,27 +5,6 @@ import (
 )
 
 var (
-
-	HTTPListenAddrFlag = cli.StringFlag{
-		Name:  "http.addr",
-		Usage: "HTTP-RPC server listening interface",
-		Value: DefaultHTTPHost,
-	}
-	HTTPEnabledFlag = cli.BoolFlag{
-		Name:  "http",
-		Usage: "Enable the HTTP-RPC server",
-	}
-
-	HTTPPortFlag = cli.IntFlag{
-		Name:  "http.port",
-		Usage: "HTTP-RPC server listening port",
-		Value: DefaultHTTPPort,
-	}
-	// RPC settings
-	IPCDisabledFlag = cli.BoolFlag{
-		Name:  "ipcdisable",
-		Usage: "Disable the IPC-RPC server",
-	}
 	IPCPathFlag = DirectoryFlag{
 		Name:  "ipcpath",
 		Usage: "Filename for IPC socket/pipe within the datadir (explicit paths escape it)",

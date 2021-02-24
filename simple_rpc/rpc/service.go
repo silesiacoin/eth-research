@@ -115,9 +115,12 @@ func (r *serviceRegistry) subscription(service, name string) *callback {
 // collection of callbacks. See server documentation for a summary of these criteria.
 func suitableCallbacks(receiver reflect.Value) map[string]*callback {
 	typ := receiver.Type()
+	log.Info("getting type of receiver", "type", typ)
 	callbacks := make(map[string]*callback)
 	for m := 0; m < typ.NumMethod(); m++ {
 		method := typ.Method(m)
+		log.Info("getting method for the receiver",
+			"numOfMethods", typ.NumMethod(), "methodName", method.Name, "pkgName", method.PkgPath)
 		if method.PkgPath != "" {
 			continue // method not exported
 		}

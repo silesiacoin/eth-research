@@ -33,7 +33,7 @@ func main() {
 		log.Errorf("failed to verify signature with publicKeyIndex: %d error: %v", signerPubKeyIndex, err)
 		return
 	}
-	log.Infof("successfully generate signature: %s with publicKeyIndex: %d", signature.HexString(), signerPubKeyIndex)
+	log.Info("successfully generate signature: %s with publicKeyIndex: %d", signature.HexString(), signerPubKeyIndex)
 
 	verifierPubKeyIndex := uint64(0)
 	err = keyManager.VerifySignature(slotInfo, verifierPubKeyIndex, signature)
