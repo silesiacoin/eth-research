@@ -27,6 +27,7 @@ import (
 // ServeListener accepts connections on l, serving JSON-RPC on them.
 func (s *Server) ServeListener(l net.Listener) error {
 	for {
+		log.Debug("IPC server is listening...")
 		conn, err := l.Accept()
 		if netutil.IsTemporaryError(err) {
 			log.Warn("RPC accept error", "err", err)

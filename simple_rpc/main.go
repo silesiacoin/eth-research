@@ -3,12 +3,15 @@ package main
 import (
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 
+	"github.com/atif-konasl/eth-research/simple_rpc/api"
 	"github.com/atif-konasl/eth-research/simple_rpc/utils"
 	"github.com/atif-konasl/eth-research/simple_rpc/rpc"
 	cli "gopkg.in/urfave/cli.v1"
@@ -16,6 +19,10 @@ import (
 
 
 var (
+	orchestratorApi       		api.ExternalAPI
+	ipcapiURL = 				"n/a"
+	serverListner 				net.Listener
+
 	app         		= cli.NewApp()
 	serverStartCommand 	= cli.Command{
 		Action:    utils.MigrateFlags(startServer),
@@ -23,7 +30,13 @@ var (
 		Usage:     "Start server",
 		ArgsUsage: "",
 		Flags: []cli.Flag{
+			utils.IPCPathFlag,
+			utils.IPCDisabledFlag,
+			utils.HTTPEnabledFlag,
+			utils.HTTPListenAddrFlag,
+			utils.HTTPPortFlag,
 			utils.LogLevelFlag,
+			utils.ConfigDirFlag,
 		},
 		Description: `
 The start-server command starts the rpc server using http or ipc.`,
@@ -60,6 +73,7 @@ var AppHelpFlagGroups = []utils.FlagGroup{
 		Flags: []cli.Flag{
 			utils.IPCDisabledFlag,
 			utils.IPCPathFlag,
+			utils.ConfigDirFlag,
 		},
 	},
 	{
@@ -68,6 +82,7 @@ var AppHelpFlagGroups = []utils.FlagGroup{
 			utils.HTTPEnabledFlag,
 			utils.HTTPListenAddrFlag,
 			utils.HTTPPortFlag,
+			utils.ConfigDirFlag,
 		},
 	},
 	{
@@ -92,7 +107,7 @@ func init() {
 		utils.LogLevelFlag,
 		utils.ConfigDirFlag,
 	}
-	//app.Action = signer
+	app.Action = startServer
 
 	app.Commands = []cli.Command{
 		serverStartCommand,
@@ -145,18 +160,12 @@ func main() {
 }
 
 func startServer(c *cli.Context) error {
-	// register signer API with server
-	var (
-		api       	rpc.ExternalAPI
-		extapiURL = "n/a"
-		ipcapiURL = "n/a"
-
-	)
+	orchestratorApi := api.NewOrchestratorApi(1, "orchestratorApi")
 	rpcAPI := []rpc.API{
 		{
 			Namespace: "orchestrator",
 			Public:    true,
-			Service:   api,
+			Service:   orchestratorApi,
 			Version:   "1.0",
 		},
 	}
@@ -165,24 +174,37 @@ func startServer(c *cli.Context) error {
 	if !c.GlobalBool(utils.IPCDisabledFlag.Name) {
 		givenPath := c.GlobalString(utils.IPCPathFlag.Name)
 		ipcapiURL = ipcEndpoint(filepath.Join(givenPath, "orchestrator.ipc"), configDir)
-		listener, _, err := StartIPCEndpoint(ipcapiURL, rpcAPI)
+		listener, _, err := rpc.StartIPCEndpoint(ipcapiURL, rpcAPI)
 		if err != nil {
-			utils.Fatalf("Could not start IPC api: %v", err)
+			log.Fatalf("Could not start IPC api: %v", err)
 		}
+		serverListner = listener
 		log.Info("IPC endpoint opened", "url", ipcapiURL)
 		defer func() {
 			listener.Close()
 			log.Info("IPC endpoint closed", "url", ipcapiURL)
 		}()
 	}
+
+	abortChan := make(chan os.Signal, 1)
+	signal.Notify(abortChan, os.Interrupt)
+
+	sig := <-abortChan
+	log.Info("Exiting...", "signal", sig)
+
 	return nil
 }
 
+//
 func stopSever(c *cli.Context) error {
-
+	if serverListner != nil {
+		serverListner.Close()
+		log.Info("IPC endpoint closed", "url", ipcapiURL)
+	}
 	return nil
 }
 
+//
 func client(c *cli.Context) error {
 
 	return nil

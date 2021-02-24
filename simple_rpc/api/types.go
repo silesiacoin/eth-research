@@ -98,3 +98,19 @@ func (args *SendTxArgs) toTransaction() *types.Transaction {
 	}
 	return types.NewTransaction(uint64(args.Nonce), args.To.Address(), (*big.Int)(&args.Value), (uint64)(args.Gas), (*big.Int)(&args.GasPrice), input)
 }
+
+
+type ExtraData struct {
+	Slot 	uint64		`json:"slot"`
+	Epoch   uint64		`json:"epoch"`
+}
+
+
+type ShardInfo struct {
+	ParentHash  common.Hash    `json:"parentHash"`
+	Coinbase    common.Address `json:"miner"`
+	Root        common.Hash    `json:"stateRoot"`
+	TxHash      common.Hash    `json:"transactionsRoot"`
+	ReceiptHash common.Hash    `json:"receiptsRoot"`
+	Number      *big.Int       `json:"number"`
+}
