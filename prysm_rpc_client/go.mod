@@ -3,6 +3,7 @@ module github.com/atif-konasl/eth-research/prysm_rpc_client
 go 1.16
 
 require (
+	github.com/ethereum/go-ethereum v1.10.1
 	github.com/gogo/protobuf v1.3.1
 	github.com/grpc-ecosystem/go-grpc-middleware v1.2.2
 	github.com/pkg/errors v0.8.1

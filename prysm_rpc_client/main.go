@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"github.com/ethereum/go-ethereum/common"
 	ptypes "github.com/gogo/protobuf/types"
 	"github.com/pkg/errors"
 	types "github.com/prysmaticlabs/eth2-types"
 	ethpb "github.com/prysmaticlabs/ethereumapis/eth/v1alpha1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"sort"
 	"time"
 
 	grpc_retry "github.com/grpc-ecosystem/go-grpc-middleware/retry"
@@ -21,7 +23,7 @@ type Client struct {
 	assignments           			*ethpb.ValidatorAssignments
 	curSlot			      			types.Slot
 	curEpoch						types.Epoch
-	proposerIndexToPubKey    	  	map[types.ValidatorIndex][]byte 		// validator index to public key mapping for current epoch
+	proposerIndexToPubKey    	  	map[types.ValidatorIndex]string		// validator index to public key mapping for current epoch
 	slotToProposerIndex  			map[types.Slot]types.ValidatorIndex //
 	conn                  			*grpc.ClientConn
 	grpcRetryDelay        			time.Duration
@@ -41,14 +43,14 @@ func NewClient(ctx context.Context) (*Client) {
 	return &Client{
 		curSlot: 0,
 		curEpoch: 0,
-		proposerIndexToPubKey: make(map[types.ValidatorIndex][]byte, 32),
+		proposerIndexToPubKey: make(map[types.ValidatorIndex]string, 32),
 		slotToProposerIndex : make(map[types.Slot]types.ValidatorIndex, 32),
 		grpcRetries: 5,
 		grpcRetryDelay: dialInterval,
 		maxCallRecvMsgSize: 4194304, 	// 4mb
 		cancel: cancel,
 		ctx: ctx,
-		endpoint: "127.0.0.1:4000",
+		endpoint: "34.91.111.241:4000",
 		SlotsPerEpoch: 32,
 	}
 }
@@ -108,7 +110,19 @@ func (c *Client) runner() {
 
 func (c *Client) logProposerInfo() {
 	log.WithField("epoch", c.curEpoch).Info("current epoch")
-	for slot, proposerIndex := range c.slotToProposerIndex {
+	// To store the keys in slice in sorted order
+	keys := make([]int, len(c.slotToProposerIndex))
+	i := 0
+	for k := range c.slotToProposerIndex {
+		keys[i] = int(uint64(k))
+		i++
+	}
+	sort.Ints(keys)
+
+	// To perform the opertion you want
+	for _, k := range keys {
+		slot := types.Slot(uint64(k))
+		proposerIndex := c.slotToProposerIndex[slot]
 		log.WithField("slot", slot).WithField("proposerIndex", proposerIndex).WithField(
 			"proposerPublicKey", c.proposerIndexToPubKey[proposerIndex]).Info("proposer info")
 	}
@@ -116,7 +130,7 @@ func (c *Client) logProposerInfo() {
 
 
 func (c *Client) processAssignments(slot types.Slot, assignments *ethpb.ValidatorAssignments) {
-	proposerIndexToPubKey := make(map[types.ValidatorIndex][]byte, c.SlotsPerEpoch)
+	proposerIndexToPubKey := make(map[types.ValidatorIndex]string, c.SlotsPerEpoch)
 	slotToProposerIndex := make(map[types.Slot]types.ValidatorIndex, c.SlotsPerEpoch)
 	//slotOffset := slot - (slot % c.SlotsPerEpoch)
 
@@ -133,7 +147,7 @@ func (c *Client) processAssignments(slot types.Slot, assignments *ethpb.Validato
 		}
 		// this validator is a proposer
 		if len(assignment.ProposerSlots) > 0 {
-			proposerIndexToPubKey[assignment.ValidatorIndex] = assignment.PublicKey
+			proposerIndexToPubKey[assignment.ValidatorIndex] = common.Bytes2Hex(assignment.PublicKey)
 		}
 	}
 	c.proposerIndexToPubKey = proposerIndexToPubKey
