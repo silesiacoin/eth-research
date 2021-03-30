@@ -12,3 +12,5 @@ require (
 	github.com/sirupsen/logrus v1.6.0
 	google.golang.org/grpc v1.33.1
 )
+
+replace github.com/prysmaticlabs/ethereumapis => github.com/lukso-network/vanguard-apis v0.0.0-20210326133834-299effe02137

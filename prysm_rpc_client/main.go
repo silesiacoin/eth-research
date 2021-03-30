@@ -23,8 +23,11 @@ type Client struct {
 	assignments           			*ethpb.ValidatorAssignments
 	curSlot			      			types.Slot
 	curEpoch						types.Epoch
-	proposerIndexToPubKey    	  	map[types.ValidatorIndex]string		// validator index to public key mapping for current epoch
-	slotToProposerIndex  			map[types.Slot]types.ValidatorIndex //
+	prevEpoch						types.Epoch
+	nextEpochProposerIndexToPubKey  map[types.ValidatorIndex]string		// validator index to public key mapping for current epoch
+	nextEpochSlotToProposerIndex  	map[types.Slot]types.ValidatorIndex //
+	curEpochProposerIndexToPubKey   map[types.ValidatorIndex]string		// validator index to public key mapping for current epoch
+	curEpochSlotToProposerIndex  	map[types.Slot]types.ValidatorIndex //
 	conn                  			*grpc.ClientConn
 	grpcRetryDelay        			time.Duration
 	grpcRetries           			uint
@@ -43,14 +46,17 @@ func NewClient(ctx context.Context) (*Client) {
 	return &Client{
 		curSlot: 0,
 		curEpoch: 0,
-		proposerIndexToPubKey: make(map[types.ValidatorIndex]string, 32),
-		slotToProposerIndex : make(map[types.Slot]types.ValidatorIndex, 32),
+		prevEpoch: 0,
+		nextEpochProposerIndexToPubKey: make(map[types.ValidatorIndex]string, 32),
+		nextEpochSlotToProposerIndex: make(map[types.Slot]types.ValidatorIndex, 32),
+		curEpochProposerIndexToPubKey: make(map[types.ValidatorIndex]string, 32),
+		curEpochSlotToProposerIndex: make(map[types.Slot]types.ValidatorIndex, 32),
 		grpcRetries: 5,
 		grpcRetryDelay: dialInterval,
 		maxCallRecvMsgSize: 4194304, 	// 4mb
 		cancel: cancel,
 		ctx: ctx,
-		endpoint: "34.91.111.241:4000",
+		endpoint: "127.0.0.1:4000", //"34.91.111.241:4000"
 		SlotsPerEpoch: 32,
 	}
 }
@@ -87,19 +93,51 @@ func (c *Client) runner() {
 	log.Info("Starting proposer info finder...")
 	ticker := time.NewTicker(dialInterval)
 	defer ticker.Stop()
+	firsTime := true
+
 	for {
 		select {
 		case <-ticker.C:
 			if err:= c.CanonicalHeadSlot(); err == nil {
-				if c.curSlot % c.SlotsPerEpoch == 0 {
-					c.curEpoch = types.Epoch(c.curSlot.DivSlot(c.SlotsPerEpoch))
-					curAssignments, err := c.GetListValidatorAssignments(c.curEpoch)
-					if err == nil {
-						c.assignments = curAssignments
-						c.processAssignments(c.curSlot, curAssignments)
-						c.logProposerInfo()
+				curEpoch := types.Epoch(c.curSlot.DivSlot(c.SlotsPerEpoch))
+				c.curEpoch = curEpoch
+				log.WithField("curEpoch", curEpoch).WithField("curSlot", c.curSlot).Info("canonical head info")
+
+				// epoch changed so get next epoch proposer list
+				if firsTime || c.curEpoch >= c.prevEpoch + 1 {
+					c.prevEpoch = c.curEpoch
+					// getting proposer list for next epoch(curEpoch + 1)
+					nextAssignments, err := c.NextEpochProposerList()
+					if err != nil {
+						log.WithError(err).Error("got error from NextEpochProposerList api")
+						return
 					}
+					proposerIndexToPubKey, slotToProposerIndex := c.processNextEpochAssignments(nextAssignments)
+					// Store current
+					c.curEpochProposerIndexToPubKey = c.nextEpochProposerIndexToPubKey
+					c.curEpochSlotToProposerIndex = c.nextEpochSlotToProposerIndex
+					// Store next
+					c.nextEpochProposerIndexToPubKey = proposerIndexToPubKey
+					c.nextEpochSlotToProposerIndex = slotToProposerIndex
+					c.logNextEpochProposerInfo()
+
+					// getting proposer list for current epoch
+					curAssignments, err := c.GetListValidatorAssignments(c.curEpoch)
+					if err != nil {
+						log.WithError(err).Error("got error when getting validator assignments info")
+						return
+					}
+
+					// For the first epoch only
+					if firsTime {
+						firsTime = false
+						proposerIndexToPubKey, slotToProposerIndex := c.processNextEpochAssignments(nextAssignments)
+						c.curEpochProposerIndexToPubKey = proposerIndexToPubKey
+						c.curEpochSlotToProposerIndex = slotToProposerIndex
+					}
+					c.checkCompatibility(curAssignments)
 				}
+
 			}
 		case <-c.ctx.Done():
 			log.Debug("Stopping grpc committee fetcher service....")
@@ -108,12 +146,11 @@ func (c *Client) runner() {
 	}
 }
 
-func (c *Client) logProposerInfo() {
-	log.WithField("epoch", c.curEpoch).Info("current epoch")
+func (c *Client) logNextEpochProposerInfo() {
 	// To store the keys in slice in sorted order
-	keys := make([]int, len(c.slotToProposerIndex))
+	keys := make([]int, len(c.nextEpochSlotToProposerIndex))
 	i := 0
-	for k := range c.slotToProposerIndex {
+	for k := range c.nextEpochSlotToProposerIndex {
 		keys[i] = int(uint64(k))
 		i++
 	}
@@ -122,27 +159,37 @@ func (c *Client) logProposerInfo() {
 	// To perform the opertion you want
 	for _, k := range keys {
 		slot := types.Slot(uint64(k))
-		proposerIndex := c.slotToProposerIndex[slot]
-		log.WithField("slot", slot).WithField("proposerIndex", proposerIndex).WithField(
-			"proposerPublicKey", c.proposerIndexToPubKey[proposerIndex]).Info("proposer info")
+		proposerIndex := c.nextEpochSlotToProposerIndex[slot]
+		log.WithField("slot", slot).WithField(
+			"nextEpoch", c.curEpoch + 1).WithField(
+				"proposerPubKey", "0x" + c.nextEpochProposerIndexToPubKey[proposerIndex][:12]).Info("Next epoch proposer info")
 	}
 }
 
+func (c *Client) checkCompatibility(curAssignments *ethpb.ValidatorAssignments)  {
+	for _, assignment := range curAssignments.Assignments {
+		for _, slot := range assignment.ProposerSlots {
+			if len(c.nextEpochProposerIndexToPubKey[c.nextEpochSlotToProposerIndex[slot]]) > 0 &&
+				c.curEpochSlotToProposerIndex[slot] != assignment.ValidatorIndex {
 
-func (c *Client) processAssignments(slot types.Slot, assignments *ethpb.ValidatorAssignments) {
+				log.WithField("slot", slot).WithField(
+					"curEpoch", c.curEpoch).WithField(
+						"giveProposerPubKey", "0x" + common.Bytes2Hex(assignment.PublicKey)[:12]).WithField(
+							"storedProposerPubKey", "0x" + c.nextEpochProposerIndexToPubKey[c.nextEpochSlotToProposerIndex[slot]][:12]).Error("Proposer public not matched!")
+				return
+			}
+		}
+	}
+}
+
+func (c *Client) processNextEpochAssignments(assignments *ethpb.ValidatorAssignments) (
+	map[types.ValidatorIndex]string, map[types.Slot]types.ValidatorIndex) {
+
 	proposerIndexToPubKey := make(map[types.ValidatorIndex]string, c.SlotsPerEpoch)
 	slotToProposerIndex := make(map[types.Slot]types.ValidatorIndex, c.SlotsPerEpoch)
-	//slotOffset := slot - (slot % c.SlotsPerEpoch)
 
 	for _, assignment := range assignments.Assignments {
 		for _, proposerSlot := range assignment.ProposerSlots {
-			//proposerIndex := proposerSlot - slotOffset
-			//if proposerIndex >= c.SlotsPerEpoch {
-			//	log.WithField("assignment", assignment).Warn("Invalid proposer slot")
-			//}
-			//log.WithField("proposerSlot", proposerSlot).WithField(
-			//	"proposerIndex", assignment.ValidatorIndex).Info(
-			//		"got validator index and proposer slots of this validator")
 			slotToProposerIndex[proposerSlot] = assignment.ValidatorIndex
 		}
 		// this validator is a proposer
@@ -150,10 +197,15 @@ func (c *Client) processAssignments(slot types.Slot, assignments *ethpb.Validato
 			proposerIndexToPubKey[assignment.ValidatorIndex] = common.Bytes2Hex(assignment.PublicKey)
 		}
 	}
-	c.proposerIndexToPubKey = proposerIndexToPubKey
-	c.slotToProposerIndex = slotToProposerIndex
+
+	return proposerIndexToPubKey, slotToProposerIndex
 }
 
+
+func (c *Client) NextEpochProposerList() (*ethpb.ValidatorAssignments, error) {
+	assignments, err := c.beaconClient.GetNextEpochProposerList(c.ctx, &ptypes.Empty{})
+	return assignments, err
+}
 
 func (c *Client) GetListValidatorAssignments(epoch types.Epoch) (*ethpb.ValidatorAssignments, error) {
 	assignments, err := c.beaconClient.ListValidatorAssignments(c.ctx, &ethpb.ListValidatorAssignmentsRequest{
@@ -161,13 +213,7 @@ func (c *Client) GetListValidatorAssignments(epoch types.Epoch) (*ethpb.Validato
 			Epoch: epoch,
 		},
 	})
-	if err != nil {
-		log.WithError(err).Error("got error when getting validator assignments info")
-		return nil, err
-	}
-	//log.WithField("requestedEpoch", epoch).WithField(
-	//	"responseEpoch", assignments.Epoch).Info("successfully got validator assignments")
-	return assignments, nil
+	return assignments, err
 }
 
 // CanonicalHeadSlot returns the slot of canonical block currently found in the
@@ -179,7 +225,6 @@ func (c *Client) CanonicalHeadSlot() error {
 		return err
 	}
 	c.curSlot = head.HeadSlot
-		//types.Epoch(head.HeadSlot / c.SlotsPerEpoch)
 	return nil
 }
 
