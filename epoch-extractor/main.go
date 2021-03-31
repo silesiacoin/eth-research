@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"github.com/ethereum/go-ethereum/common"
 	ptypes "github.com/gogo/protobuf/types"
 	"github.com/pkg/errors"
@@ -17,6 +18,19 @@ import (
 
 var dialInterval = 5 * time.Second
 var errConnectionIssue = errors.New("could not connect")
+
+var (
+	vanguardRPCEndpoint = flag.String(
+		"vangurad-rpc-endpoint",
+		"127.0.0.1:4000",
+		"Vanguard node RPC provider endpoint(Default: 127.0.0.1:4000",
+		)
+	slotsPerEpoch = flag.Uint64(
+		"slots-per-epoch",
+		32,
+		"Number of slots per epoch(Default: 32",
+		)
+)
 
 // Client provides proposer list for current epoch as well as next epoch
 type Client struct {
@@ -40,7 +54,7 @@ type Client struct {
 	SlotsPerEpoch         			types.Slot
 }
 
-func NewClient(ctx context.Context) (*Client) {
+func NewClient(ctx context.Context, vanguardRPCEndpoint string, slotsPerEpoch uint64) (*Client) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	return &Client{
@@ -56,15 +70,24 @@ func NewClient(ctx context.Context) (*Client) {
 		maxCallRecvMsgSize: 4194304, 	// 4mb
 		cancel: cancel,
 		ctx: ctx,
-		endpoint: "127.0.0.1:4000", //"34.91.111.241:4000"
-		SlotsPerEpoch: 32,
+		endpoint: vanguardRPCEndpoint,
+		SlotsPerEpoch: types.Slot(slotsPerEpoch),
 	}
 }
 
 func main() {
+	flag.Parse()
+
+	if *slotsPerEpoch == 0 {
+		log.Print("No --slots-per-epoch specified, defaulting 32")
+	}
+
+	if *vanguardRPCEndpoint == "" {
+		log.Print("No --vangurad-rpc-endpoint specified, defaulting 127.0.0.1:4000")
+	}
 
 	ctx := context.Background()
-	c := NewClient(ctx)
+	c := NewClient(ctx, *vanguardRPCEndpoint, *slotsPerEpoch)
 	dialOpts := ConstructDialOptions(
 		c.maxCallRecvMsgSize,
 		"",
@@ -90,7 +113,7 @@ func main() {
 }
 
 func (c *Client) runner() {
-	log.Info("Starting proposer info finder...")
+	log.Info("Starting epoch explorer")
 	ticker := time.NewTicker(dialInterval)
 	defer ticker.Stop()
 	firsTime := true
@@ -119,7 +142,6 @@ func (c *Client) runner() {
 					// Store next
 					c.nextEpochProposerIndexToPubKey = proposerIndexToPubKey
 					c.nextEpochSlotToProposerIndex = slotToProposerIndex
-					c.logNextEpochProposerInfo()
 
 					// getting proposer list for current epoch
 					curAssignments, err := c.GetListValidatorAssignments(c.curEpoch)
@@ -131,13 +153,16 @@ func (c *Client) runner() {
 					// For the first epoch only
 					if firsTime {
 						firsTime = false
-						proposerIndexToPubKey, slotToProposerIndex := c.processNextEpochAssignments(nextAssignments)
+						proposerIndexToPubKey, slotToProposerIndex := c.processNextEpochAssignments(curAssignments)
+						//c.logProposerSchedule(c.curEpoch, proposerIndexToPubKey, slotToProposerIndex)
 						c.curEpochProposerIndexToPubKey = proposerIndexToPubKey
 						c.curEpochSlotToProposerIndex = slotToProposerIndex
 					}
+
+					c.logProposerSchedule(c.curEpoch, c.curEpochProposerIndexToPubKey, c.curEpochSlotToProposerIndex)
+					c.logProposerSchedule(c.curEpoch + 1, c.nextEpochProposerIndexToPubKey, c.nextEpochSlotToProposerIndex)
 					c.checkCompatibility(curAssignments)
 				}
-
 			}
 		case <-c.ctx.Done():
 			log.Debug("Stopping grpc committee fetcher service....")
@@ -146,11 +171,15 @@ func (c *Client) runner() {
 	}
 }
 
-func (c *Client) logNextEpochProposerInfo() {
+func (c *Client) logProposerSchedule(
+	epoch types.Epoch, proposerIndexToPubKey map[types.ValidatorIndex]string,
+	 slotToProposerIndex map[types.Slot]types.ValidatorIndex) {
+
+	log.WithField("epoch", epoch).Info("Showing epoch info...")
 	// To store the keys in slice in sorted order
-	keys := make([]int, len(c.nextEpochSlotToProposerIndex))
+	keys := make([]int, len(slotToProposerIndex))
 	i := 0
-	for k := range c.nextEpochSlotToProposerIndex {
+	for k := range slotToProposerIndex {
 		keys[i] = int(uint64(k))
 		i++
 	}
@@ -159,10 +188,10 @@ func (c *Client) logNextEpochProposerInfo() {
 	// To perform the opertion you want
 	for _, k := range keys {
 		slot := types.Slot(uint64(k))
-		proposerIndex := c.nextEpochSlotToProposerIndex[slot]
+		proposerIndex := slotToProposerIndex[slot]
 		log.WithField("slot", slot).WithField(
-			"nextEpoch", c.curEpoch + 1).WithField(
-				"proposerPubKey", "0x" + c.nextEpochProposerIndexToPubKey[proposerIndex][:12]).Info("Next epoch proposer info")
+			"nextEpoch", epoch).WithField(
+				"proposerPubKey", "0x" + proposerIndexToPubKey[proposerIndex]).Info(" Proposer schedule")
 	}
 }
 
@@ -203,7 +232,7 @@ func (c *Client) processNextEpochAssignments(assignments *ethpb.ValidatorAssignm
 
 
 func (c *Client) NextEpochProposerList() (*ethpb.ValidatorAssignments, error) {
-	assignments, err := c.beaconClient.GetNextEpochProposerList(c.ctx, &ptypes.Empty{})
+	assignments, err := c.beaconClient.NextEpochProposerList(c.ctx, &ptypes.Empty{})
 	return assignments, err
 }
 

@@ -1,4 +1,4 @@
-module github.com/atif-konasl/eth-research/prysm_rpc_client
+module github.com/atif-konasl/eth-research/epoch-extractor
 
 go 1.16
 
@@ -13,4 +13,4 @@ require (
 	google.golang.org/grpc v1.33.1
 )
 
-replace github.com/prysmaticlabs/ethereumapis => github.com/lukso-network/vanguard-apis v0.0.0-20210326133834-299effe02137
+replace github.com/prysmaticlabs/ethereumapis => github.com/lukso-network/vanguard-apis v0.0.0-20210331083856-a569864eb9aa
