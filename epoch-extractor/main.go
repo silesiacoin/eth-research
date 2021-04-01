@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/rpc"
 	ptypes "github.com/gogo/protobuf/types"
 	"github.com/pkg/errors"
 	types "github.com/prysmaticlabs/eth2-types"
@@ -20,58 +22,82 @@ var dialInterval = 5 * time.Second
 var errConnectionIssue = errors.New("could not connect")
 
 var (
+	timeNow             = time.Now().Unix()
 	vanguardRPCEndpoint = flag.String(
-		"vangurad-rpc-endpoint",
+		"vanguard-rpc-endpoint",
 		"127.0.0.1:4000",
 		"Vanguard node RPC provider endpoint(Default: 127.0.0.1:4000",
-		)
+	)
 	slotsPerEpoch = flag.Uint64(
 		"slots-per-epoch",
 		32,
 		"Number of slots per epoch(Default: 32",
-		)
+	)
+	pandoraRPCEndpoint = flag.String(
+		"pandora-rpc-endpoint",
+		"127.0.0.1:8545",
+		"Pandora node RP provider endpoint(Default: 127.0.0.1:8545",
+	)
+	genesisTimeStart = flag.Int64(
+		"genesis-time-start",
+		timeNow,
+		fmt.Sprintf("Genesis time start(Default: %d (now)", timeNow),
+	)
 )
 
 // Client provides proposer list for current epoch as well as next epoch
 type Client struct {
-	assignments           			*ethpb.ValidatorAssignments
-	curSlot			      			types.Slot
-	curEpoch						types.Epoch
-	prevEpoch						types.Epoch
-	nextEpochProposerIndexToPubKey  map[types.ValidatorIndex]string		// validator index to public key mapping for current epoch
-	nextEpochSlotToProposerIndex  	map[types.Slot]types.ValidatorIndex //
-	curEpochProposerIndexToPubKey   map[types.ValidatorIndex]string		// validator index to public key mapping for current epoch
-	curEpochSlotToProposerIndex  	map[types.Slot]types.ValidatorIndex //
-	conn                  			*grpc.ClientConn
-	grpcRetryDelay        			time.Duration
-	grpcRetries           			uint
-	maxCallRecvMsgSize    			int
-	cancel                			context.CancelFunc
-	ctx 				  			context.Context
-	endpoint              			string
-	beaconClient	      			ethpb.BeaconChainClient
-	validatorClient       			ethpb.BeaconNodeValidatorClient
-	SlotsPerEpoch         			types.Slot
+	assignments                    *ethpb.ValidatorAssignments
+	curSlot                        types.Slot
+	curEpoch                       types.Epoch
+	prevEpoch                      types.Epoch
+	nextEpochProposerIndexToPubKey map[types.ValidatorIndex]string     // validator index to public key mapping for current epoch
+	nextEpochSlotToProposerIndex   map[types.Slot]types.ValidatorIndex //
+	curEpochProposerIndexToPubKey  map[types.ValidatorIndex]string     // validator index to public key mapping for current epoch
+	curEpochSlotToProposerIndex    map[types.Slot]types.ValidatorIndex //
+	conn                           *grpc.ClientConn
+	pandoraConn                    *rpc.Client
+	genesisTime                    uint64
+	grpcRetryDelay                 time.Duration
+	grpcRetries                    uint
+	maxCallRecvMsgSize             int
+	cancel                         context.CancelFunc
+	ctx                            context.Context
+	endpoint                       string
+	beaconClient                   ethpb.BeaconChainClient
+	validatorClient                ethpb.BeaconNodeValidatorClient
+	SlotsPerEpoch                  types.Slot
 }
 
-func NewClient(ctx context.Context, vanguardRPCEndpoint string, slotsPerEpoch uint64) (*Client) {
+func NewClient(
+	ctx context.Context,
+	vanguardRPCEndpoint string,
+	slotsPerEpoch uint64,
+	pandoraRPCEndpoint string,
+) *Client {
 	ctx, cancel := context.WithCancel(ctx)
+	client, err := rpc.Dial(pandoraRPCEndpoint)
+
+	if nil != err {
+		panic(err.Error())
+	}
 
 	return &Client{
-		curSlot: 0,
-		curEpoch: 0,
-		prevEpoch: 0,
+		curSlot:                        0,
+		curEpoch:                       0,
+		prevEpoch:                      0,
 		nextEpochProposerIndexToPubKey: make(map[types.ValidatorIndex]string, 32),
-		nextEpochSlotToProposerIndex: make(map[types.Slot]types.ValidatorIndex, 32),
-		curEpochProposerIndexToPubKey: make(map[types.ValidatorIndex]string, 32),
-		curEpochSlotToProposerIndex: make(map[types.Slot]types.ValidatorIndex, 32),
-		grpcRetries: 5,
-		grpcRetryDelay: dialInterval,
-		maxCallRecvMsgSize: 4194304, 	// 4mb
-		cancel: cancel,
-		ctx: ctx,
-		endpoint: vanguardRPCEndpoint,
-		SlotsPerEpoch: types.Slot(slotsPerEpoch),
+		nextEpochSlotToProposerIndex:   make(map[types.Slot]types.ValidatorIndex, 32),
+		curEpochProposerIndexToPubKey:  make(map[types.ValidatorIndex]string, 32),
+		curEpochSlotToProposerIndex:    make(map[types.Slot]types.ValidatorIndex, 32),
+		grpcRetries:                    5,
+		grpcRetryDelay:                 dialInterval,
+		maxCallRecvMsgSize:             4194304, // 4mb
+		cancel:                         cancel,
+		pandoraConn:                    client,
+		ctx:                            ctx,
+		endpoint:                       vanguardRPCEndpoint,
+		SlotsPerEpoch:                  types.Slot(slotsPerEpoch),
 	}
 }
 
@@ -83,11 +109,19 @@ func main() {
 	}
 
 	if *vanguardRPCEndpoint == "" {
-		log.Print("No --vangurad-rpc-endpoint specified, defaulting 127.0.0.1:4000")
+		log.Print("No --vanguard-rpc-endpoint specified, defaulting 127.0.0.1:4000")
+	}
+
+	if "" == *pandoraRPCEndpoint {
+		log.Print("No --pandora-rpc-endpoint specified, defaulting 127.0.0.1:8545")
+	}
+
+	if timeNow == *genesisTimeStart {
+		log.Printf("No --genesis-time-start specified, defaulting %d", timeNow)
 	}
 
 	ctx := context.Background()
-	c := NewClient(ctx, *vanguardRPCEndpoint, *slotsPerEpoch)
+	c := NewClient(ctx, *vanguardRPCEndpoint, *slotsPerEpoch, *pandoraRPCEndpoint)
 	dialOpts := ConstructDialOptions(
 		c.maxCallRecvMsgSize,
 		"",
@@ -107,6 +141,7 @@ func main() {
 	c.conn = conn
 	c.validatorClient = ethpb.NewBeaconNodeValidatorClient(conn)
 	c.beaconClient = ethpb.NewBeaconChainClient(conn)
+	c.genesisTime = uint64(*genesisTimeStart)
 
 	// start client runner
 	c.runner()
@@ -116,18 +151,20 @@ func (c *Client) runner() {
 	log.Info("Starting epoch explorer")
 	ticker := time.NewTicker(dialInterval)
 	defer ticker.Stop()
-	firsTime := true
+	firstTime := true
+	rpcClient := c.pandoraConn
+	epochDuration := time.Duration(6) * time.Duration(32)
 
 	for {
 		select {
 		case <-ticker.C:
-			if err:= c.CanonicalHeadSlot(); err == nil {
+			if err := c.CanonicalHeadSlot(); err == nil {
 				curEpoch := types.Epoch(c.curSlot.DivSlot(c.SlotsPerEpoch))
 				c.curEpoch = curEpoch
 				log.WithField("curEpoch", curEpoch).WithField("curSlot", c.curSlot).Info("canonical head info")
 
 				// epoch changed so get next epoch proposer list
-				if firsTime || c.curEpoch >= c.prevEpoch + 1 {
+				if firstTime || c.curEpoch >= c.prevEpoch+1 {
 					c.prevEpoch = c.curEpoch
 					// getting proposer list for next epoch(curEpoch + 1)
 					nextAssignments, err := c.NextEpochProposerList()
@@ -151,8 +188,8 @@ func (c *Client) runner() {
 					}
 
 					// For the first epoch only
-					if firsTime {
-						firsTime = false
+					if firstTime {
+						firstTime = false
 						proposerIndexToPubKey, slotToProposerIndex := c.processNextEpochAssignments(curAssignments)
 						//c.logProposerSchedule(c.curEpoch, proposerIndexToPubKey, slotToProposerIndex)
 						c.curEpochProposerIndexToPubKey = proposerIndexToPubKey
@@ -160,8 +197,46 @@ func (c *Client) runner() {
 					}
 
 					c.logProposerSchedule(c.curEpoch, c.curEpochProposerIndexToPubKey, c.curEpochSlotToProposerIndex)
-					c.logProposerSchedule(c.curEpoch + 1, c.nextEpochProposerIndexToPubKey, c.nextEpochSlotToProposerIndex)
+					c.logProposerSchedule(c.curEpoch+1, c.nextEpochProposerIndexToPubKey, c.nextEpochSlotToProposerIndex)
 					c.checkCompatibility(curAssignments)
+
+					notifyPandoraFunc := func() {
+						// Here we notify Pandora about epoch
+						var response bool
+						validatorsListPayload := [32]string{}
+
+						for index, validator := range c.curEpochProposerIndexToPubKey {
+							validatorsListPayload[index] = validator
+						}
+
+						currentEpochStart := c.genesisTime
+
+						if c.curEpoch > 0 {
+							currentEpochStart = currentEpochStart + (uint64(c.curEpoch) * uint64(epochDuration))
+						}
+
+						err = rpcClient.Call(
+							&response,
+							"eth_insertMinimalConsensusInfo",
+							uint64(c.curEpoch),
+							validatorsListPayload,
+							currentEpochStart,
+						)
+
+						if nil != err {
+							log.WithError(err).Error("got error when filling minimal consensus info")
+
+							return
+						}
+
+						if !response {
+							log.Error("did not succeed to fill minimal consensus info")
+
+							return
+						}
+					}
+
+					go notifyPandoraFunc()
 				}
 			}
 		case <-c.ctx.Done():
@@ -173,7 +248,7 @@ func (c *Client) runner() {
 
 func (c *Client) logProposerSchedule(
 	epoch types.Epoch, proposerIndexToPubKey map[types.ValidatorIndex]string,
-	 slotToProposerIndex map[types.Slot]types.ValidatorIndex) {
+	slotToProposerIndex map[types.Slot]types.ValidatorIndex) {
 
 	log.WithField("epoch", epoch).Info("Showing epoch info...")
 	// To store the keys in slice in sorted order
@@ -191,11 +266,11 @@ func (c *Client) logProposerSchedule(
 		proposerIndex := slotToProposerIndex[slot]
 		log.WithField("slot", slot).WithField(
 			"nextEpoch", epoch).WithField(
-				"proposerPubKey", "0x" + proposerIndexToPubKey[proposerIndex]).Info(" Proposer schedule")
+			"proposerPubKey", "0x"+proposerIndexToPubKey[proposerIndex]).Info(" Proposer schedule")
 	}
 }
 
-func (c *Client) checkCompatibility(curAssignments *ethpb.ValidatorAssignments)  {
+func (c *Client) checkCompatibility(curAssignments *ethpb.ValidatorAssignments) {
 	for _, assignment := range curAssignments.Assignments {
 		for _, slot := range assignment.ProposerSlots {
 			if len(c.nextEpochProposerIndexToPubKey[c.nextEpochSlotToProposerIndex[slot]]) > 0 &&
@@ -203,8 +278,8 @@ func (c *Client) checkCompatibility(curAssignments *ethpb.ValidatorAssignments) 
 
 				log.WithField("slot", slot).WithField(
 					"curEpoch", c.curEpoch).WithField(
-						"giveProposerPubKey", "0x" + common.Bytes2Hex(assignment.PublicKey)[:12]).WithField(
-							"storedProposerPubKey", "0x" + c.nextEpochProposerIndexToPubKey[c.nextEpochSlotToProposerIndex[slot]][:12]).Error("Proposer public not matched!")
+					"giveProposerPubKey", "0x"+common.Bytes2Hex(assignment.PublicKey)[:12]).WithField(
+					"storedProposerPubKey", "0x"+c.nextEpochProposerIndexToPubKey[c.nextEpochSlotToProposerIndex[slot]][:12]).Error("Proposer public not matched!")
 				return
 			}
 		}
@@ -229,7 +304,6 @@ func (c *Client) processNextEpochAssignments(assignments *ethpb.ValidatorAssignm
 
 	return proposerIndexToPubKey, slotToProposerIndex
 }
-
 
 func (c *Client) NextEpochProposerList() (*ethpb.ValidatorAssignments, error) {
 	assignments, err := c.beaconClient.NextEpochProposerList(c.ctx, &ptypes.Empty{})
