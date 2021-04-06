@@ -6,7 +6,7 @@ import (
 
 func main() {
 	config := accManager.Config{
-		WalletDir: "./wallet/prysm-wallet-v2",
+		WalletDir:      "./wallet/prysm-wallet-v2",
 		KeymanagerKind: accManager.Kind(0),
 		WalletPassword: "Konasl@123",
 	}
