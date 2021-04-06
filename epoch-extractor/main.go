@@ -18,7 +18,7 @@ import (
 	grpc_retry "github.com/grpc-ecosystem/go-grpc-middleware/retry"
 )
 
-var dialInterval = 5 * time.Second
+var dialInterval = 1 * time.Second
 var errConnectionIssue = errors.New("could not connect")
 
 var (
@@ -51,8 +51,6 @@ type Client struct {
 	curSlot                        types.Slot
 	curEpoch                       types.Epoch
 	prevEpoch                      types.Epoch
-	nextEpochProposerIndexToPubKey map[types.ValidatorIndex]string     // validator index to public key mapping for current epoch
-	nextEpochSlotToProposerIndex   map[types.Slot]types.ValidatorIndex //
 	curEpochProposerIndexToPubKey  map[types.ValidatorIndex]string     // validator index to public key mapping for current epoch
 	curEpochSlotToProposerIndex    map[types.Slot]types.ValidatorIndex //
 	conn                           *grpc.ClientConn
@@ -86,8 +84,6 @@ func NewClient(
 		curSlot:                        0,
 		curEpoch:                       0,
 		prevEpoch:                      0,
-		nextEpochProposerIndexToPubKey: make(map[types.ValidatorIndex]string, 32),
-		nextEpochSlotToProposerIndex:   make(map[types.Slot]types.ValidatorIndex, 32),
 		curEpochProposerIndexToPubKey:  make(map[types.ValidatorIndex]string, 32),
 		curEpochSlotToProposerIndex:    make(map[types.Slot]types.ValidatorIndex, 32),
 		grpcRetries:                    5,
@@ -172,33 +168,9 @@ func (c *Client) runner() {
 						log.WithError(err).Error("got error from NextEpochProposerList api")
 						return
 					}
-					proposerIndexToPubKey, slotToProposerIndex := c.processNextEpochAssignments(nextAssignments)
-					// Store current
-					c.curEpochProposerIndexToPubKey = c.nextEpochProposerIndexToPubKey
-					c.curEpochSlotToProposerIndex = c.nextEpochSlotToProposerIndex
-					// Store next
-					c.nextEpochProposerIndexToPubKey = proposerIndexToPubKey
-					c.nextEpochSlotToProposerIndex = slotToProposerIndex
-
-					// getting proposer list for current epoch
-					curAssignments, err := c.GetListValidatorAssignments(c.curEpoch)
-					if err != nil {
-						log.WithError(err).Error("got error when getting validator assignments info")
-						return
-					}
-
-					// For the first epoch only
-					if firstTime {
-						firstTime = false
-						proposerIndexToPubKey, slotToProposerIndex := c.processNextEpochAssignments(curAssignments)
-						//c.logProposerSchedule(c.curEpoch, proposerIndexToPubKey, slotToProposerIndex)
-						c.curEpochProposerIndexToPubKey = proposerIndexToPubKey
-						c.curEpochSlotToProposerIndex = slotToProposerIndex
-					}
-
+					c.processNextEpochAssignments(nextAssignments)
 					c.logProposerSchedule(c.curEpoch, c.curEpochProposerIndexToPubKey, c.curEpochSlotToProposerIndex)
-					c.logProposerSchedule(c.curEpoch+1, c.nextEpochProposerIndexToPubKey, c.nextEpochSlotToProposerIndex)
-					c.checkCompatibility(curAssignments)
+					firstTime = false
 
 					notifyPandoraFunc := func() {
 						// Here we notify Pandora about epoch
@@ -270,29 +242,12 @@ func (c *Client) logProposerSchedule(
 		slot := types.Slot(uint64(k))
 		proposerIndex := slotToProposerIndex[slot]
 		log.WithField("slot", slot).WithField(
-			"nextEpoch", epoch).WithField(
+			"epoch", epoch).WithField(
 			"proposerPubKey", "0x"+proposerIndexToPubKey[proposerIndex]).Info(" Proposer schedule")
 	}
 }
 
-func (c *Client) checkCompatibility(curAssignments *ethpb.ValidatorAssignments) {
-	for _, assignment := range curAssignments.Assignments {
-		for _, slot := range assignment.ProposerSlots {
-			if len(c.nextEpochProposerIndexToPubKey[c.nextEpochSlotToProposerIndex[slot]]) > 0 &&
-				c.curEpochSlotToProposerIndex[slot] != assignment.ValidatorIndex {
-
-				log.WithField("slot", slot).WithField(
-					"curEpoch", c.curEpoch).WithField(
-					"giveProposerPubKey", "0x"+common.Bytes2Hex(assignment.PublicKey)[:12]).WithField(
-					"storedProposerPubKey", "0x"+c.nextEpochProposerIndexToPubKey[c.nextEpochSlotToProposerIndex[slot]][:12]).Error("Proposer public not matched!")
-				return
-			}
-		}
-	}
-}
-
-func (c *Client) processNextEpochAssignments(assignments *ethpb.ValidatorAssignments) (
-	map[types.ValidatorIndex]string, map[types.Slot]types.ValidatorIndex) {
+func (c *Client) processNextEpochAssignments(assignments *ethpb.ValidatorAssignments) {
 
 	proposerIndexToPubKey := make(map[types.ValidatorIndex]string, c.SlotsPerEpoch)
 	slotToProposerIndex := make(map[types.Slot]types.ValidatorIndex, c.SlotsPerEpoch)
@@ -307,20 +262,12 @@ func (c *Client) processNextEpochAssignments(assignments *ethpb.ValidatorAssignm
 		}
 	}
 
-	return proposerIndexToPubKey, slotToProposerIndex
+	c.curEpochProposerIndexToPubKey = proposerIndexToPubKey
+	c.curEpochSlotToProposerIndex = slotToProposerIndex
 }
 
 func (c *Client) NextEpochProposerList() (*ethpb.ValidatorAssignments, error) {
 	assignments, err := c.beaconClient.NextEpochProposerList(c.ctx, &ptypes.Empty{})
-	return assignments, err
-}
-
-func (c *Client) GetListValidatorAssignments(epoch types.Epoch) (*ethpb.ValidatorAssignments, error) {
-	assignments, err := c.beaconClient.ListValidatorAssignments(c.ctx, &ethpb.ListValidatorAssignmentsRequest{
-		QueryFilter: &ethpb.ListValidatorAssignmentsRequest_Epoch{
-			Epoch: epoch,
-		},
-	})
 	return assignments, err
 }
 
