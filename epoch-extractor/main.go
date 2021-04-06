@@ -203,10 +203,13 @@ func (c *Client) runner() {
 					notifyPandoraFunc := func() {
 						// Here we notify Pandora about epoch
 						var response bool
-						validatorsListPayload := [32]string{}
-
-						for index, validator := range c.curEpochProposerIndexToPubKey {
-							validatorsListPayload[index] = validator
+						validatorsListPayload := make([]string, 0)
+						//
+						for _, validator := range c.curEpochProposerIndexToPubKey {
+							if "0x" != validator[:2] {
+								validator = fmt.Sprintf("0x%s", validator)
+							}
+							validatorsListPayload = append(validatorsListPayload, validator)
 						}
 
 						currentEpochStart := c.genesisTime
@@ -229,14 +232,16 @@ func (c *Client) runner() {
 							return
 						}
 
-						if !response {
-							log.Error("did not succeed to fill minimal consensus info")
+						msg := "succeed to fill minimal consensus info"
 
-							return
+						if !response {
+							msg = fmt.Sprintf("did not %s", msg)
 						}
+
+						log.Info(msg)
 					}
 
-					go notifyPandoraFunc()
+					notifyPandoraFunc()
 				}
 			}
 		case <-c.ctx.Done():
