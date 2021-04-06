@@ -47,24 +47,23 @@ var (
 
 // Client provides proposer list for current epoch as well as next epoch
 type Client struct {
-	assignments                    *ethpb.ValidatorAssignments
-	curSlot                        types.Slot
-	curEpoch                       types.Epoch
-	prevEpoch                      types.Epoch
-	curEpochProposerIndexToPubKey  map[types.ValidatorIndex]string     // validator index to public key mapping for current epoch
-	curEpochSlotToProposerIndex    map[types.Slot]types.ValidatorIndex //
-	conn                           *grpc.ClientConn
-	pandoraConn                    *rpc.Client
-	genesisTime                    uint64
-	grpcRetryDelay                 time.Duration
-	grpcRetries                    uint
-	maxCallRecvMsgSize             int
-	cancel                         context.CancelFunc
-	ctx                            context.Context
-	endpoint                       string
-	beaconClient                   ethpb.BeaconChainClient
-	validatorClient                ethpb.BeaconNodeValidatorClient
-	SlotsPerEpoch                  types.Slot
+	assignments            *ethpb.ValidatorAssignments
+	curSlot                types.Slot
+	curEpoch               types.Epoch
+	prevEpoch              types.Epoch
+	curEpochSlotToProposer map[types.Slot]string //
+	conn                   *grpc.ClientConn
+	pandoraConn            *rpc.Client
+	genesisTime            uint64
+	grpcRetryDelay         time.Duration
+	grpcRetries            uint
+	maxCallRecvMsgSize     int
+	cancel                 context.CancelFunc
+	ctx                    context.Context
+	endpoint               string
+	beaconClient           ethpb.BeaconChainClient
+	validatorClient        ethpb.BeaconNodeValidatorClient
+	SlotsPerEpoch          types.Slot
 }
 
 func NewClient(
@@ -81,19 +80,18 @@ func NewClient(
 	}
 
 	return &Client{
-		curSlot:                        0,
-		curEpoch:                       0,
-		prevEpoch:                      0,
-		curEpochProposerIndexToPubKey:  make(map[types.ValidatorIndex]string, 32),
-		curEpochSlotToProposerIndex:    make(map[types.Slot]types.ValidatorIndex, 32),
-		grpcRetries:                    5,
-		grpcRetryDelay:                 dialInterval,
-		maxCallRecvMsgSize:             4194304, // 4mb
-		cancel:                         cancel,
-		pandoraConn:                    client,
-		ctx:                            ctx,
-		endpoint:                       vanguardRPCEndpoint,
-		SlotsPerEpoch:                  types.Slot(slotsPerEpoch),
+		curSlot:                0,
+		curEpoch:               0,
+		prevEpoch:              0,
+		curEpochSlotToProposer: make(map[types.Slot]string, 32),
+		grpcRetries:            5,
+		grpcRetryDelay:         dialInterval,
+		maxCallRecvMsgSize:     4194304, // 4mb
+		cancel:                 cancel,
+		pandoraConn:            client,
+		ctx:                    ctx,
+		endpoint:               vanguardRPCEndpoint,
+		SlotsPerEpoch:          types.Slot(slotsPerEpoch),
 	}
 }
 
@@ -169,7 +167,7 @@ func (c *Client) runner() {
 						return
 					}
 					c.processNextEpochAssignments(nextAssignments)
-					c.logProposerSchedule(c.curEpoch, c.curEpochProposerIndexToPubKey, c.curEpochSlotToProposerIndex)
+					c.logProposerSchedule()
 					firstTime = false
 
 					notifyPandoraFunc := func() {
@@ -177,7 +175,7 @@ func (c *Client) runner() {
 						var response bool
 						validatorsListPayload := make([]string, 0)
 						//
-						for _, validator := range c.curEpochProposerIndexToPubKey {
+						for _, validator := range c.curEpochSlotToProposer {
 							if "0x" != validator[:2] {
 								validator = fmt.Sprintf("0x%s", validator)
 							}
@@ -223,15 +221,12 @@ func (c *Client) runner() {
 	}
 }
 
-func (c *Client) logProposerSchedule(
-	epoch types.Epoch, proposerIndexToPubKey map[types.ValidatorIndex]string,
-	slotToProposerIndex map[types.Slot]types.ValidatorIndex) {
-
-	log.WithField("epoch", epoch).Info("Showing epoch info...")
+func (c *Client) logProposerSchedule() {
+	log.WithField("epoch", c.curEpoch).Info("Showing epoch info...")
 	// To store the keys in slice in sorted order
-	keys := make([]int, len(slotToProposerIndex))
+	keys := make([]int, len(c.curEpochSlotToProposer))
 	i := 0
-	for k := range slotToProposerIndex {
+	for k, _ := range c.curEpochSlotToProposer {
 		keys[i] = int(uint64(k))
 		i++
 	}
@@ -240,30 +235,24 @@ func (c *Client) logProposerSchedule(
 	// To perform the opertion you want
 	for _, k := range keys {
 		slot := types.Slot(uint64(k))
-		proposerIndex := slotToProposerIndex[slot]
 		log.WithField("slot", slot).WithField(
-			"epoch", epoch).WithField(
-			"proposerPubKey", "0x"+proposerIndexToPubKey[proposerIndex]).Info(" Proposer schedule")
+			"epoch", c.curEpoch).WithField(
+			"proposerPubKey", "0x"+c.curEpochSlotToProposer[slot]).Info(" Proposer schedule")
 	}
 }
 
 func (c *Client) processNextEpochAssignments(assignments *ethpb.ValidatorAssignments) {
-
-	proposerIndexToPubKey := make(map[types.ValidatorIndex]string, c.SlotsPerEpoch)
-	slotToProposerIndex := make(map[types.Slot]types.ValidatorIndex, c.SlotsPerEpoch)
-
+	slotToPubKey := make(map[types.Slot]string, c.SlotsPerEpoch)
 	for _, assignment := range assignments.Assignments {
 		for _, proposerSlot := range assignment.ProposerSlots {
-			slotToProposerIndex[proposerSlot] = assignment.ValidatorIndex
-		}
-		// this validator is a proposer
-		if len(assignment.ProposerSlots) > 0 {
-			proposerIndexToPubKey[assignment.ValidatorIndex] = common.Bytes2Hex(assignment.PublicKey)
+			slotToPubKey[proposerSlot] = common.Bytes2Hex(assignment.PublicKey)
 		}
 	}
 
-	c.curEpochProposerIndexToPubKey = proposerIndexToPubKey
-	c.curEpochSlotToProposerIndex = slotToProposerIndex
+	if c.curEpoch == 0 {
+		slotToPubKey[0] = "0x"
+	}
+	c.curEpochSlotToProposer = slotToPubKey
 }
 
 func (c *Client) NextEpochProposerList() (*ethpb.ValidatorAssignments, error) {
