@@ -18,7 +18,7 @@ import (
 	grpc_retry "github.com/grpc-ecosystem/go-grpc-middleware/retry"
 )
 
-var dialInterval = 1 * time.Second
+var dialInterval = 10 * time.Second
 var errConnectionIssue = errors.New("could not connect")
 
 var (
@@ -175,11 +175,15 @@ func (c *Client) runner() {
 						var response bool
 						validatorsListPayload := make([]string, 0)
 						//
-						for _, validator := range c.curEpochSlotToProposer {
+						for index, validator := range c.curEpochSlotToProposer {
 							if "0x" != validator[:2] {
 								validator = fmt.Sprintf("0x%s", validator)
 							}
 							validatorsListPayload = append(validatorsListPayload, validator)
+
+							if index >= 32 {
+								break
+							}
 						}
 
 						currentEpochStart := c.genesisTime
@@ -187,6 +191,9 @@ func (c *Client) runner() {
 						if c.curEpoch > 0 {
 							currentEpochStart = currentEpochStart + (uint64(c.curEpoch) * uint64(epochDuration))
 						}
+
+						log.WithField("validatorsLen", len(validatorsListPayload)).Info(
+							"eth_insertMinimalConsensusInfo")
 
 						err = rpcClient.Call(
 							&response,
@@ -208,7 +215,7 @@ func (c *Client) runner() {
 							msg = fmt.Sprintf("did not %s", msg)
 						}
 
-						log.Info(msg)
+						log.WithField("validatorsLen", len(validatorsListPayload)).Info(msg)
 					}
 
 					notifyPandoraFunc()
@@ -243,16 +250,29 @@ func (c *Client) logProposerSchedule() {
 
 func (c *Client) processNextEpochAssignments(assignments *ethpb.ValidatorAssignments) {
 	slotToPubKey := make(map[types.Slot]string, c.SlotsPerEpoch)
-	for _, assignment := range assignments.Assignments {
-		for _, proposerSlot := range assignment.ProposerSlots {
-			slotToPubKey[proposerSlot] = common.Bytes2Hex(assignment.PublicKey)
+	for index, assignment := range assignments.Assignments {
+		// For first epoch we will get n -1 because first proposer comes from genesis
+		if 0 == c.curEpoch {
+			index = index + 1
 		}
+
+		slotToPubKey[types.Slot(index)] = common.Bytes2Hex(assignment.PublicKey)
 	}
 
+	// Fallback for filling the key with empty data
 	if c.curEpoch == 0 {
 		slotToPubKey[0] = "0x"
 	}
+
+	slotToPubKeyLen := len(slotToPubKey)
+
+	if slotToPubKeyLen != 32 {
+		log.WithField("slotsLen", len(slotToPubKey)).Error("Invalid slot length")
+	}
+
 	c.curEpochSlotToProposer = slotToPubKey
+	log.WithField("slotToPubKey", slotToPubKey).WithField(
+		"epoch", c.curEpoch).WithField("slotLen", len(slotToPubKey)).Info(" Proposer schedule")
 }
 
 func (c *Client) NextEpochProposerList() (*ethpb.ValidatorAssignments, error) {
