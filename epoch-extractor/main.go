@@ -4,7 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/rpc"
 	ptypes "github.com/gogo/protobuf/types"
 	"github.com/pkg/errors"
@@ -12,7 +12,6 @@ import (
 	ethpb "github.com/prysmaticlabs/ethereumapis/eth/v1alpha1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"sort"
 	"time"
 
 	grpc_retry "github.com/grpc-ecosystem/go-grpc-middleware/retry"
@@ -166,22 +165,28 @@ func (c *Client) runner() {
 						log.WithError(err).Error("got error from NextEpochProposerList api")
 						return
 					}
-					c.processNextEpochAssignments(nextAssignments)
-					c.logProposerSchedule()
+
 					firstTime = false
 
 					notifyPandoraFunc := func() {
 						// Here we notify Pandora about epoch
 						var response bool
 						validatorsListPayload := make([]string, 0)
-						//
-						for index, validator := range c.curEpochSlotToProposer {
-							if "0x" != validator[:2] {
-								validator = fmt.Sprintf("0x%s", validator)
-							}
-							validatorsListPayload = append(validatorsListPayload, validator)
 
-							if index >= 32 {
+						// Add additional field at start for genesis purpose
+						if 0 == nextAssignments.Epoch && len(nextAssignments.Assignments) > 32 {
+							validatorsListPayload = append(validatorsListPayload, "0x")
+						}
+
+						for index, bytesValidator := range nextAssignments.Assignments {
+							validator := hexutil.Encode(bytesValidator.PublicKey)
+
+							if len(validatorsListPayload) <= 32 {
+								validatorsListPayload = append(validatorsListPayload, validator)
+							}
+
+							if len(validatorsListPayload) > 32 {
+								log.WithField("validators", validator).WithField("index", index).Warn("Invalid index")
 								break
 							}
 						}
@@ -226,53 +231,6 @@ func (c *Client) runner() {
 			return
 		}
 	}
-}
-
-func (c *Client) logProposerSchedule() {
-	log.WithField("epoch", c.curEpoch).Info("Showing epoch info...")
-	// To store the keys in slice in sorted order
-	keys := make([]int, len(c.curEpochSlotToProposer))
-	i := 0
-	for k, _ := range c.curEpochSlotToProposer {
-		keys[i] = int(uint64(k))
-		i++
-	}
-	sort.Ints(keys)
-
-	// To perform the opertion you want
-	for _, k := range keys {
-		slot := types.Slot(uint64(k))
-		log.WithField("slot", slot).WithField(
-			"epoch", c.curEpoch).WithField(
-			"proposerPubKey", "0x"+c.curEpochSlotToProposer[slot]).Info(" Proposer schedule")
-	}
-}
-
-func (c *Client) processNextEpochAssignments(assignments *ethpb.ValidatorAssignments) {
-	slotToPubKey := make(map[types.Slot]string, c.SlotsPerEpoch)
-	for index, assignment := range assignments.Assignments {
-		// For first epoch we will get n -1 because first proposer comes from genesis
-		if 0 == c.curEpoch {
-			index = index + 1
-		}
-
-		slotToPubKey[types.Slot(index)] = common.Bytes2Hex(assignment.PublicKey)
-	}
-
-	// Fallback for filling the key with empty data
-	if c.curEpoch == 0 {
-		slotToPubKey[0] = "0x"
-	}
-
-	slotToPubKeyLen := len(slotToPubKey)
-
-	if slotToPubKeyLen != 32 {
-		log.WithField("slotsLen", len(slotToPubKey)).Error("Invalid slot length")
-	}
-
-	c.curEpochSlotToProposer = slotToPubKey
-	log.WithField("slotToPubKey", slotToPubKey).WithField(
-		"epoch", c.curEpoch).WithField("slotLen", len(slotToPubKey)).Info(" Proposer schedule")
 }
 
 func (c *Client) NextEpochProposerList() (*ethpb.ValidatorAssignments, error) {
